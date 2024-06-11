@@ -1,3 +1,4 @@
+import os
 import argparse
 import tqdm
 import shutil
@@ -22,6 +23,7 @@ def main():
     parser = argparse.ArgumentParser()
     arg = parser.add_argument
     arg('--mode', choices=['train', 'validate', 'predict'], default='train')
+    arg('--model_dir', type=str, default='../rbt3/chinese_rbt3_pytorch')
     arg('--run_root', default='.')
     arg('--batch-size', type=int, default=16)
     arg('--step', type=int, default=1)
@@ -39,7 +41,7 @@ def main():
     arg('--multi-gpu', type=int, default=0)
     arg('--print-num', type=int, default=5)
     arg('--temperature', type=float)
-    
+
     args = parser.parse_args()
 
     df = pd.read_table('../data/dialog-rewrite/corpus.txt', sep="\t\t", names=['a','b','current','label'], dtype=str)
@@ -61,7 +63,7 @@ def main():
     # train_df['len'] = train_df['content'].apply(lambda x: len(x))
 
     run_root = Path('../experiments/' + args.run_root)
-    tokenizer = BertTokenizer.from_pretrained("../rbt3")
+    tokenizer = BertTokenizer.from_pretrained(args.model_dir)
     valid_set = TaggerRewriterDataset(valid_df, tokenizer, valid=True)
     valid_index = np.array(valid_set.valid_index)
     # np.save('index.npy', valid_index)
@@ -71,7 +73,7 @@ def main():
                               shuffle=False, num_workers=args.workers,
                               collate_fn=tagger_collate_fn)
 
-    config = BertConfig.from_json_file('../rbt3/config.json')
+    config = BertConfig.from_json_file(os.path.join(args.model_dir, 'config.json'))
     config.num_labels = 5
     # # config.is_decoder = True
     # decoder = BertModel.from_pretrained("../rbt3", config=config)
