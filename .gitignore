@@ -4,3 +4,5 @@ rbt3/vocab.txt
 experiments
 src/__pycache__/*i
 .idea
+rbt3/
+scp.sh
