@@ -7,11 +7,11 @@ import torch
 class TaggerRewriterDataset(Dataset):
 
     def __init__(self, df, tokenizer, valid=False):
-        self.a = df['a'].values.tolist()
-        self.b = df['b'].values.tolist()
+        self.a = df['a'].values.tolist() # 用户输入
+        self.b = df['b'].values.tolist() # 系统回复
         self.is_valid = valid
-        self.current = df['current'].values.tolist()
-        self.label = df['label'].values.tolist()
+        self.current = df['current'].values.tolist() # 待改写语句
+        self.label = df['label'].values.tolist() # 理想改写结果
         self._tokenizer = tokenizer
         self.ori_sentence = []
         self.sentence = []
@@ -33,6 +33,19 @@ class TaggerRewriterDataset(Dataset):
         return temp
 
     def generate_label(self):
+        """改写数据生成
+        1. 改写这里作者分了两中常见情景。
+        - 30%包含指代词。我喜欢他 -> 我喜欢张艺兴
+        - 50%会有信息省略。快告诉我 -> 快告诉我现在几点
+        Args:
+
+        Returns:
+            start: 关键信息start（关键主语等信息）
+            end: 关键信息end（关键主语等信息）
+            insert: 补全位置
+            start_ner: 指代start位置
+            start_end: 指代end位置
+        """
         # 全部采用指针抽取
         # 根据改写的数据对原始数据进行标注
         # 去哪里    长城北路公园    在什么地方     长城北路公园在什么地方
@@ -46,13 +59,19 @@ class TaggerRewriterDataset(Dataset):
             n = random.random()
             start, end, insert_pos, start_ner, end_ner = 0,0,0,0,0
             new_token_type = []
+            # 上下文: 用户输入 + 系统回复
             context_new_input = ["[CLS]"]+self.tokenize_chinese(self.a[i])+["[SEP]"]+self.tokenize_chinese(self.b[i])+["[SEP]"]
             new_token_type.extend([0]*len(context_new_input))
             if n >= 0.3:
                 utterance_token = self.tokenize_chinese(self.current[i])+["SEP"]
             else:
+                # 直接拿label构建数据，就不需要改写了，相当于构造了负样本
                 utterance_token = self.tokenize_chinese(self.label[i])+["SEP"]
+            # context_new_input: 用户输入 + 系统回复
+            # new_input: 上下文 + 当前待改写的文本
             new_input = context_new_input + utterance_token
+
+            # 上下文token_type为0，当前token_type为1
             new_token_type.extend([1]*len(utterance_token))
 
             # 改写或者作为验证集时不对关键信息进行抽取
@@ -73,11 +92,16 @@ class TaggerRewriterDataset(Dataset):
                 continue
             # 获取四个指针信息
             insert = True
-            # 如果原始语句所有词汇都在改写中，则改写为插入新语句
+            # 如果原始语句所有词汇都在改写中，则改写为插入新语句（而不是替换现有的一些词汇）
             for word in self.current[i]:
                 if word not in self.label[i]:
                     insert = False
             # -----寻找增加的信息------------------
+            '''
+            - 寻找关键信息起点
+            1. 如果前面的都相等，那么起点位置就是len(current), 例如current=我也想去，label=我也想去听演唱会
+            2. 如果中间出现不一致的字符，那么中间的不想等的位置则为起点，例如current=周杰伦的比较难抢，label=周杰伦的演唱会比较难抢
+            '''
             text_start, text_end = 0, 0
             for j in range(len(self.label[i])):
                 if j >= len(self.current[i]):
@@ -88,6 +112,12 @@ class TaggerRewriterDataset(Dataset):
                 else:
                     text_start = j
                     break
+            '''
+            - 寻找关键信息的终点位置
+            1. 从后往前看，如果相等，则跳过。
+            2. 如果不想等，则找到了结束位置。例如current=周杰伦的【end】比较难抢，label=周杰伦的演唱会【end】比较难抢
+            3. 如果一致相等，则当前节点就为end位置。例如current=【end】我也想去，label=演唱会【end】我也想去
+            '''
             for j in range(len(self.label[i])):
                 if j >= len(self.current[i]):
                     text_end = j
@@ -97,8 +127,9 @@ class TaggerRewriterDataset(Dataset):
                 else:
                     text_end = j
                     break
+            # 这里抽取出来的text则为改写后label中补充的text
             text = self.label[i][text_start:(len(self.label[i]) - text_end)]
-            # 获取插入文本及位置
+            # 获取插入文本及位置：找到补充的text的来源
             if text in self.a[i]:
                 start = self.a[i].index(text) + 1
                 end = start + len(text) - 1
@@ -106,15 +137,17 @@ class TaggerRewriterDataset(Dataset):
                 start = self.b[i].index(text) + len(self.a[i]) + 2
                 end = start + len(text) - 1
             else:
+                # 如果没有，则跳过该样本
                 drop_item += 1
                 continue
             if insert:
                 self.label_type.append(0)
                 # 去哪里    长城北路公园    在什么地方     长城北路公园在什么地方
-                insert_pos = len(self.current[i])-text_end + len(context_new_input)
+                insert_pos = len(self.current[i])-text_end + len(context_new_input) # 为啥 + len(context_new_input)?
             else:
                 # 指代
                 # 为什么讨厌张艺兴       我喜欢张艺兴 很可爱啊       我也喜欢他     我也喜欢张艺兴
+                # 和前面同样的方法找到指代词的起点终点位置
                 coref_start, coref_end = 0, 0
                 for j in range(len(self.current[i])):
                     if self.current[i][j] == self.label[i][j]:
@@ -136,13 +169,13 @@ class TaggerRewriterDataset(Dataset):
             if self.is_valid:
                 self.pointer.append(_label)
             else:
-                self.pointer.append([start,end,insert_pos,start_ner,end_ner])
-            self.sentence.append(self._tokenizer.convert_tokens_to_ids(new_input))
-            self.token_type.append(new_token_type)
-            self.context_len.append(context_new_input)
-            self.ori_sentence.append(','+self.a[i]+','+self.b[i]+','+self.current[i]+',')
-            self.valid_label.append(self.label[i])
-            self.valid_index.append(i)
+                self.pointer.append([start,end,insert_pos,start_ner,end_ner]) # 关键信息起点，终点，插入位置，指代消解起点，终点
+            self.sentence.append(self._tokenizer.convert_tokens_to_ids(new_input))  # new_input: 上下文 + 当前待改写的文本
+            self.token_type.append(new_token_type)  # 上下文token_type为0，当前token_type为1
+            self.context_len.append(context_new_input) # 上下文: 用户输入 + 系统回复
+            self.ori_sentence.append(','+self.a[i]+','+self.b[i]+','+self.current[i]+',') # 原始句子
+            self.valid_label.append(self.label[i]) # 理想的改写结果
+            self.valid_index.append(i) # index
         print('数据总数 ', len(self.sentence), '丢弃样本数目 ', drop_item)
         print('信息插入', self.label_type.count(0))
         print('指代消歧义', self.label_type.count(1))
